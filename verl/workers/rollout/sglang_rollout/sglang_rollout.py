@@ -939,6 +939,9 @@ class SGLangRollout(BaseRollout):
                 user_turns += 1
                 messages = [{"role": x.role, "content": x.content} for x in _req.messages]
 
+                # Clear cache before interaction processing to prevent OOM
+                get_torch_device().empty_cache()
+
                 # Get interaction by name from interaction_kwargs
                 interaction_name = _req.interaction_kwargs.get(
                     "name", "gsm8k"
@@ -953,6 +956,9 @@ class SGLangRollout(BaseRollout):
                 should_terminate_sequence, content, reward, metrics = await interaction.generate_response(
                     _req.request_id, messages, **_req.interaction_kwargs
                 )
+                
+                # Clear cache after interaction processing
+                get_torch_device().empty_cache()
                 user_turn_rewards.append(reward)
                 if should_terminate_sequence:
                     finish_reason_type = FinishReasonTypeEnum.STOP
@@ -975,11 +981,17 @@ class SGLangRollout(BaseRollout):
             await tool.release(_req.request_id, **_req.tools_kwargs[name].get("release_kwargs", {}))
             return name, reward
 
+        # Clear cache before tool processing to prevent OOM
+        get_torch_device().empty_cache()
+        
         tool_reward_tasks = []
         for name in _req.tools_kwargs.keys():
             tool = self._tool_map[name]
             tool_reward_tasks.append(calc_reward_and_release_fn(name, tool))
         tool_reward_scores = await asyncio.gather(*tool_reward_tasks)
+        
+        # Clear cache after tool processing
+        get_torch_device().empty_cache()
         tool_reward_scores = dict(tool_reward_scores)
         all_rewards = {**tool_reward_scores, **{"user_turn_rewards": user_turn_rewards}}
         _req.finalize(self.processing_class, all_rewards, finish_reason_type)
@@ -1009,13 +1021,22 @@ class SGLangRollout(BaseRollout):
 
     async def _handle_pending_state(self, _req: AsyncRolloutRequest) -> AsyncRolloutRequest:
         if _req.tool_schemas is not None:
+            # Clear cache before tool creation to prevent OOM
+            get_torch_device().empty_cache()
+            
             tool_creation_coroutines = []
             for tool_schema in _req.tool_schemas:
                 tool = self._tool_map[tool_schema.function.name]
                 create_kwargs = _req.tools_kwargs[tool.name].get("create_kwargs", {})
                 tool_creation_coroutines.append(tool.create(_req.request_id, **create_kwargs))
             await asyncio.gather(*tool_creation_coroutines)
+            
+            # Clear cache after tool creation
+            get_torch_device().empty_cache()
         if _req.interaction_kwargs and self.interaction_map:
+            # Clear cache before interaction initialization to prevent OOM
+            get_torch_device().empty_cache()
+            
             interaction_kwargs = _req.interaction_kwargs
             # Get interaction by name from interaction_kwargs
             interaction_name = interaction_kwargs.get("name", "gsm8k")  # Default to gsm8k for backward compatibility
@@ -1027,6 +1048,9 @@ class SGLangRollout(BaseRollout):
 
             interaction = self.interaction_map[interaction_name]
             await interaction.start_interaction(_req.request_id, **interaction_kwargs)
+            
+            # Clear cache after interaction initialization
+            get_torch_device().empty_cache()
 
     @GPUMemoryLogger(role="sglang rollout", logger=logger)
     @torch.no_grad()
