@@ -117,6 +117,9 @@ class AsyncRolloutRequest(BaseModel):
     generation_prompt_ids: Optional[torch.Tensor] = None
     base_conv_wo_gen_prompt_end_pos: int
     base_conv_with_gen_prompt_end_pos: int
+    # Selector for which assistant turns to optimize.
+    # Supported values: "all" (default), "last" (only last assistant turn)
+    train_turn_selector: str = "all"
 
     @model_validator(mode="before")
     @classmethod
@@ -673,3 +676,21 @@ class AsyncRolloutRequest(BaseModel):
             ..., : self.max_response_len
         ]
         self.response_loss_mask = self.loss_mask[..., self.prompt_loss_mask.shape[-1] :][..., : self.max_response_len]
+
+        # If only training the last assistant turn, zero out other assistant tokens in response_loss_mask
+        if self.train_turn_selector == "last":
+            # response_loss_mask is shape [1, resp_len]
+            mask = self.response_loss_mask.squeeze(0)
+            if mask.numel() > 0:
+                # find last index with 1
+                last_one_indices = torch.nonzero(mask, as_tuple=False)
+                if last_one_indices.numel() > 0:
+                    last_idx = int(last_one_indices[-1].item())
+                    # walk left to find the start of the last contiguous block of ones
+                    start_idx = last_idx
+                    while start_idx - 1 >= 0 and mask[start_idx - 1].item() == 1:
+                        start_idx -= 1
+                    # zero everything then set the last block to 1
+                    new_mask = torch.zeros_like(mask)
+                    new_mask[start_idx : last_idx + 1] = 1
+                    self.response_loss_mask = new_mask.unsqueeze(0)
